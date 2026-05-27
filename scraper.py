@@ -1,5 +1,9 @@
 from bs4 import BeautifulSoup
-import requests 
+import requests
+import re
+import time
+import math
+import xml.etree.ElementTree as ET
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,7 +19,7 @@ def get_courses():
     page = 1 #needed to go through all pages of courses
     courses = []
 
-    for i in range(33):
+    for i in range(1):
         url = 'https://academiccalendars.romcmaster.ca/content.php?catoid=65&catoid=65&navoid=14802&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1&filter%5B3%5D=1&filter%5Bcpage%5D=' + str(page) + '#acalog_template_course_filter'  
         
         response = requests.get(url, headers=header, verify = False)
@@ -29,17 +33,129 @@ def get_courses():
             if 'preview_course_nopop' in href:
                 courses.append({
                     'title': link.text.strip(),
-                    'url': url + "/" + href
+                    'url': 'https://academiccalendars.romcmaster.ca/' + href #speicific URL giving quick summary of course
                 }) 
 
-        print(f"Page {page} scraped, total courses found: {len(courses)}")
+        print(f"Page {page} scraped, total courses found: {len(courses)}") #to track progress
 
         page += 1
         
-    
     return courses
 
+
+def get_course_details(url):
+    response = requests.get(url, headers=header, verify=False)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    td = soup.find('td', class_='block_content')
+    if not td:
+        return None
+
+    p = td.find('p')
+    if not p:
+        return None
+
+    # Title
+    h1 = p.find('h1', id='course_preview_title')
+    title = h1.get_text(strip=True) if h1 else None
+
+    # Units — text node immediately after h1, before first <br>
+    units = None
+    if h1:
+        for sibling in h1.next_siblings:
+            if hasattr(sibling, 'name') and sibling.name == 'br':
+                break
+            if isinstance(sibling, str):
+                match = re.search(r'(\d+(?:\.\d+)?)\s+unit', sibling)
+                if match:
+                    units = float(match.group(1))
+                    break
+
+    # Description — all text between <hr> and the first <strong>
+    description_parts = []
+    hr = p.find('hr')
+    if hr:
+        for sibling in hr.next_siblings:
+            if hasattr(sibling, 'name') and sibling.name == 'strong':
+                break
+            if isinstance(sibling, str):
+                text = sibling.strip()
+                if text:
+                    description_parts.append(text)
+    description = ' '.join(description_parts).strip()
+
+    # Prerequisites and antirequisites — text/links after each labeled <strong>
+    prerequisites = None
+    antirequisites = None
+    for strong in p.find_all('strong'):
+        label = strong.get_text(strip=True)
+        parts = []
+        for sibling in strong.next_siblings:
+            if hasattr(sibling, 'name') and sibling.name == 'br':
+                break
+            if isinstance(sibling, str):
+                text = sibling.strip()
+                if text:
+                    parts.append(text)
+            elif hasattr(sibling, 'name'):
+                parts.append(sibling.get_text(strip=True))
+        value = ' '.join(parts).strip() or None
+
+        if 'Prerequisite(s)' in label:
+            prerequisites = value
+        elif 'Antirequisite(s)' in label:
+            antirequisites = value
+
+    return {
+        'title': title,
+        'units': units,
+        'description': description,
+        'prerequisites': prerequisites,
+        'antirequisites': antirequisites,
+    }
+
+
+def _get_active_terms():
+    r = requests.get(
+        'https://mytimetable.mcmaster.ca/api/v2/multiselectdata.js',
+        headers=header, verify=False
+    )
+    # Term IDs appear as the 4th argument in MsiInstitution(...) calls
+    ids = re.findall(r'MsiInstitution\([^,]+,[^,]+,[^,]+,"(\d+)"', r.text)
+    return sorted(set(ids), reverse=True)  # most recent first
+
+
+def get_professor_for_course(course_code):
+    # Auth tokens required by the timetable API — replicates nWindow() from common.js
+    t = int(math.floor(time.time() / 60)) % 1000
+    e = t % 3 + t % 39 + t % 42
+
+    terms = _get_active_terms()
+
+    encoded = requests.utils.quote(course_code, safe='')
+    for term in terms:
+        url = (
+            f'https://mytimetable.mcmaster.ca/api/class-data'
+            f'?term={term}&course_0_0={encoded}'
+            f'&va_0_0=al&t={t}&e={e}&nouser=1'
+        )
+        response = requests.get(url, headers=header, verify=False)
+        if response.status_code != 200:
+            continue
+
+        try:
+            root = ET.fromstring(response.text)
+        except ET.ParseError:
+            continue
+
+        for block in root.iter('block'):
+            if block.get('type') == 'LEC':
+                teacher = block.get('teacher', '').strip()
+                if teacher:
+                    return teacher
+
+    return None
+
+
 if __name__ == "__main__":
-    courses = get_courses()
-    for course in courses[:-1]:
-        print(course['title'], course['url'])
+    print(get_course_details('https://academiccalendars.romcmaster.ca/preview_course_nopop.php?catoid=65&coid=323026'))
