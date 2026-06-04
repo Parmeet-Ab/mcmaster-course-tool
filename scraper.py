@@ -106,8 +106,16 @@ def get_course_details(url):
         elif 'Antirequisite(s)' in label:
             antirequisites = value
 
+    # Extract course code — the part before the first " - " in the title
+    course_code = None
+    if title:
+        match = re.match(r'^([A-Z\s]+\s+\w+)', title)
+        if match:
+            course_code = match.group(1).strip()
+
     return {
         'title': title,
+        'course_code': course_code,
         'units': units,
         'description': description,
         'prerequisites': prerequisites,
@@ -155,6 +163,88 @@ def get_professor_for_course(course_code):
                     return teacher
 
     return None
+
+
+def get_course_detail(course_code):
+    encoded = requests.utils.quote(course_code, safe='')
+    url = (
+        'https://academiccalendars.romcmaster.ca/content.php'
+        '?catoid=65&catoid=65&navoid=14802'
+        '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
+        f'&filter%5B3%5D=1&filter%5Bcpage%5D=1&filter%5Bkeyword%5D={encoded}'
+    )
+    response = requests.get(url, headers=header, verify=False)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    for link in soup.find_all('a', href=True):
+        href = link['href']
+        if 'preview_course_nopop' in href:
+            course_url = 'https://academiccalendars.romcmaster.ca/' + href
+            time.sleep(1)
+            return get_course_details(course_url)
+
+    return None
+
+
+def get_professor_rating(professor_name):
+    MCMASTER_ID = 'U2Nob29sLTEwMTE='
+    query = """
+    query TeacherSearch($count: Int!, $query: TeacherSearchQuery!) {
+      search: newSearch {
+        teachers(query: $query, first: $count) {
+          edges {
+            node {
+              firstName
+              lastName
+              avgRating
+              avgDifficulty
+              numRatings
+            }
+          }
+        }
+      }
+    }
+    """
+    payload = {
+        'query': query,
+        'variables': {
+            'count': 5,
+            'query': {'text': professor_name, 'schoolID': MCMASTER_ID},
+        },
+    }
+    rmp_headers = {
+        **header,
+        'Authorization': 'Basic dGVzdDp0ZXN0',
+        'Content-Type': 'application/json',
+    }
+    try:
+        response = requests.post(
+            'https://www.ratemyprofessors.com/graphql',
+            json=payload,
+            headers=rmp_headers,
+            verify=False,
+            timeout=10,
+        )
+        edges = (
+            response.json()
+            .get('data', {})
+            .get('search', {})
+            .get('teachers', {})
+            .get('edges', [])
+        )
+    except Exception:
+        return None
+
+    if not edges:
+        return None
+
+    node = edges[0]['node']
+    return {
+        'name': f"{node['firstName']} {node['lastName']}",
+        'avg_rating': node['avgRating'],
+        'avg_difficulty': node['avgDifficulty'],
+        'num_ratings': node['numRatings'],
+    }
 
 
 if __name__ == "__main__":
