@@ -1,11 +1,13 @@
 import os
+import google.generativeai as genai
 from dotenv import load_dotenv
-import anthropic
 from scraper import get_course_detail, get_professor_for_course, get_professor_rating
 
 load_dotenv()
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-3.1-flash-lite")
 
 
 def get_course_summary(course_code):
@@ -36,31 +38,24 @@ def get_course_summary(course_code):
 
     course_info = "\n".join(sections)
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "You are a helpful McMaster University course advisor. "
-                    "Based on the following course and professor data, write a concise, "
-                    "student-friendly summary covering:\n"
-                    "1. What the course is about (in plain language)\n"
-                    "2. How hard it is (based on units, prerequisites, and professor difficulty)\n"
-                    "3. What the professor is like (based on their RMP rating)\n\n"
-                    "Write 3-4 short paragraphs in plain language a first-year student would understand. "
-                    "If any data is missing, work with what is available.\n\n"
-                    f"Course Information:\n{course_info}"
-                ),
-            }
-        ],
+    prompt = (
+        "You are a helpful McMaster University course advisor. "
+        "Based on the following course and professor data, write a concise, "
+        "student-friendly summary covering:\n"
+        "1. What the course is about (in plain language)\n"
+        "2. How hard it is (based on units, prerequisites, and professor difficulty)\n"
+        "3. What the professor is like (based on their RMP rating)\n\n"
+        "Write 3-4 short paragraphs in plain language a first-year student would understand. "
+        "If any data is missing, work with what is available.\n\n"
+        f"Course Information:\n{course_info}"
     )
 
-    return message.content[0].text
+    response = model.generate_content(prompt)
+    return response.text
 
 
 if __name__ == "__main__":
+    #only runs if the courses are acctually posted on the website, otherwise use test case
     import sys
     code = sys.argv[1] if len(sys.argv) > 1 else "COMPSCI 1JC3"
     print(get_course_summary(code))

@@ -176,12 +176,19 @@ def get_course_detail(course_code):
     response = requests.get(url, headers=header, verify=False)
     soup = BeautifulSoup(response.text, 'html.parser')
 
+    normalized = course_code.replace(' ', '').upper()
+
     for link in soup.find_all('a', href=True):
         href = link['href']
-        if 'preview_course_nopop' in href:
-            course_url = 'https://academiccalendars.romcmaster.ca/' + href
-            time.sleep(1)
-            return get_course_details(course_url)
+        if 'preview_course_nopop' not in href:
+            continue
+        # Confirm the link text matches the requested course code before fetching
+        link_text = link.get_text(strip=True).replace(' ', '').upper()
+        if not link_text.startswith(normalized):
+            continue
+        course_url = 'https://academiccalendars.romcmaster.ca/' + href
+        time.sleep(1)
+        return get_course_details(course_url)
 
     return None
 
