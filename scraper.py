@@ -4,7 +4,7 @@ import re
 import time
 import math
 import xml.etree.ElementTree as ET
-
+import json
 import os
 from dotenv import load_dotenv
 import urllib3
@@ -16,17 +16,59 @@ header = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-# Optional Mosaic session cookie — set MCMASTER_SESSION in .env to enable
-# authenticated timetable lookups (which include instructor names).
-# To get yours: log into mytimetable.mcmaster.ca, open devtools → Application
-# → Cookies → copy the full Cookie header string and paste it into .env.
 _mcmaster_cookie = os.getenv('MCMASTER_SESSION', '')
+
+_COURSE_INDEX_PATH = os.path.join(os.path.dirname(__file__), 'data', 'courses.json')
+
+def _load_course_index():
+    if not os.path.exists(_COURSE_INDEX_PATH):
+        return {}
+    with open(_COURSE_INDEX_PATH) as f:
+        return json.load(f)
+
+_course_index = _load_course_index()
+
+
+def build_course_index():
+    """Scrape all catalog pages and save a normalized_code→url index to data/courses.json.
+    Run this once per semester to refresh."""
+
+    index = {}
+    for page in range(1, 35):
+        url = (
+            'https://academiccalendars.romcmaster.ca/content.php'
+            '?catoid=65&catoid=65&navoid=14802'
+            '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
+            f'&filter%5B3%5D=1&filter%5Bcpage%5D={page}'
+        )
+        response = requests.get(url, headers=header, verify=False)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        links = [l for l in soup.find_all('a', href=True) if 'preview_course_nopop' in l['href']]
+        if not links:
+            break
+
+        for link in links:
+            title = link.get_text(strip=True)
+            code_part = title.split(' - ')[0].strip()
+            normalized = code_part.replace(' ', '').upper()
+            if normalized:
+                index[normalized] = 'https://academiccalendars.romcmaster.ca/' + link['href']
+
+        print(f"Page {page} scraped — index size: {len(index)}")
+        time.sleep(1)
+
+    with open(_COURSE_INDEX_PATH, 'w') as f:
+        json.dump(index, f)
+    print(f"Saved {len(index)} courses to {_COURSE_INDEX_PATH}")
+    return index
+
 
 def get_courses():
     page = 1 #needed to go through all pages of courses
     courses = []
 
-    for i in range(1):
+    for i in range(1, 35):
         url = 'https://academiccalendars.romcmaster.ca/content.php?catoid=65&catoid=65&navoid=14802&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1&filter%5B3%5D=1&filter%5Bcpage%5D=' + str(page) + '#acalog_template_course_filter'  
         
         response = requests.get(url, headers=header, verify = False)
@@ -130,14 +172,19 @@ def get_course_details(url):
     }
 
 
+_cached_terms = None
+
 def _get_active_terms():
+    global _cached_terms
+    if _cached_terms:
+        return _cached_terms
     r = requests.get(
         'https://mytimetable.mcmaster.ca/api/v2/multiselectdata.js',
         headers=header, verify=False
     )
-    # Term IDs appear as the 4th argument in MsiInstitution(...) calls
     ids = re.findall(r'MsiInstitution\([^,]+,[^,]+,[^,]+,"(\d+)"', r.text)
-    return sorted(set(ids), reverse=True)  # most recent first
+    _cached_terms = sorted(set(ids), reverse=True)
+    return _cached_terms
 
 
 def get_professor_for_course(course_code):
@@ -170,43 +217,54 @@ def get_professor_for_course(course_code):
 
         for block in root.iter('block'):
             if block.get('type') == 'LEC':
-                teacher = block.get('teacher', '').strip()
-                if teacher:
-                    return teacher
+                raw = block.get('teacher', '').strip()
+                if not raw:
+                    continue
+                # Field can be "Last, First; Staff" — pick the first real name
+                names = [n.strip() for n in raw.split(';')]
+                professor = next((n for n in names if n.lower() != 'staff' and n), None)
+                if professor:
+                    return professor
 
     return None
 
 
 def get_course_detail(course_code):
-    encoded = requests.utils.quote(course_code, safe='')
-    url = (
-        'https://academiccalendars.romcmaster.ca/content.php'
-        '?catoid=65&catoid=65&navoid=14802'
-        '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
-        f'&filter%5B3%5D=1&filter%5Bcpage%5D=1&filter%5Bkeyword%5D={encoded}'
-    )
-    response = requests.get(url, headers=header, verify=False)
-    soup = BeautifulSoup(response.text, 'html.parser')
-
     normalized = course_code.replace(' ', '').upper()
 
-    for link in soup.find_all('a', href=True):
-        href = link['href']
-        if 'preview_course_nopop' not in href:
-            continue
-        # Confirm the link text matches the requested course code before fetching
-        link_text = link.get_text(strip=True).replace(' ', '').upper()
-        if not link_text.startswith(normalized):
-            continue
-        course_url = 'https://academiccalendars.romcmaster.ca/' + href
-        time.sleep(1)
-        return get_course_details(course_url)
+    # Fast path: direct URL lookup from cached index
+    if normalized in _course_index:
+        return get_course_details(_course_index[normalized])
+
+    # Slow path: search the calendar page by page (used when index hasn't been built yet)
+    encoded = requests.utils.quote(course_code, safe='')
+    for page in range(1, 20):
+        url = (
+            'https://academiccalendars.romcmaster.ca/content.php'
+            '?catoid=65&catoid=65&navoid=14802'
+            '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
+            f'&filter%5B3%5D=1&filter%5Bcpage%5D={page}&filter%5Bkeyword%5D={encoded}'
+        )
+        response = requests.get(url, headers=header, verify=False)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        course_links = [l for l in soup.find_all('a', href=True) if 'preview_course_nopop' in l['href']]
+        if not course_links:
+            break
+
+        for link in course_links:
+            link_text = link.get_text(strip=True).replace(' ', '').upper()
+            if not link_text.startswith(normalized):
+                continue
+            course_url = 'https://academiccalendars.romcmaster.ca/' + link['href']
+            time.sleep(1)
+            return get_course_details(course_url)
 
     return None
 
 
 def get_professor_rating(professor_name):
-    MCMASTER_ID = 'U2Nob29sLTEwMTE='
+    MCMASTER_ID = 'U2Nob29sLTE0NDA='
     query = """
     query TeacherSearch($count: Int!, $query: TeacherSearchQuery!) {
       search: newSearch {
@@ -281,4 +339,4 @@ def get_professor_rating(professor_name):
 
 
 if __name__ == "__main__":
-    print(get_course_details('https://academiccalendars.romcmaster.ca/preview_course_nopop.php?catoid=65&coid=323026'))
+    build_course_index()
