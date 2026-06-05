@@ -58,4 +58,4 @@ if __name__ == "__main__":
     #only runs if the courses are acctually posted on the website, otherwise use test case
     import sys
     code = sys.argv[1] if len(sys.argv) > 1 else "COMPSCI 1JC3"
-    print(get_course_summary(code))
+    print(get_course_summary('MATH 1ZC3'))

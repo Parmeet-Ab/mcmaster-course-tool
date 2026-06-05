@@ -5,15 +5,22 @@ import time
 import math
 import xml.etree.ElementTree as ET
 
+import os
+from dotenv import load_dotenv
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-#Trust the site skip SSL verification since the site is not secure and we just want to scrape data from it
 
-
+load_dotenv()
 
 header = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    } #to avoid being blocked by the website
+    }
+
+# Optional Mosaic session cookie — set MCMASTER_SESSION in .env to enable
+# authenticated timetable lookups (which include instructor names).
+# To get yours: log into mytimetable.mcmaster.ca, open devtools → Application
+# → Cookies → copy the full Cookie header string and paste it into .env.
+_mcmaster_cookie = os.getenv('MCMASTER_SESSION', '')
 
 def get_courses():
     page = 1 #needed to go through all pages of courses
@@ -141,13 +148,18 @@ def get_professor_for_course(course_code):
     terms = _get_active_terms()
 
     encoded = requests.utils.quote(course_code, safe='')
+    req_headers = {**header}
+    if _mcmaster_cookie:
+        req_headers['Cookie'] = _mcmaster_cookie
+
     for term in terms:
         url = (
             f'https://mytimetable.mcmaster.ca/api/class-data'
             f'?term={term}&course_0_0={encoded}'
-            f'&va_0_0=al&t={t}&e={e}&nouser=1'
+            f'&va_0_0=al&t={t}&e={e}'
+            + ('' if _mcmaster_cookie else '&nouser=1')
         )
-        response = requests.get(url, headers=header, verify=False)
+        response = requests.get(url, headers=req_headers, verify=False)
         if response.status_code != 200:
             continue
 
@@ -206,6 +218,9 @@ def get_professor_rating(professor_name):
               avgRating
               avgDifficulty
               numRatings
+              school {
+                id
+              }
             }
           }
         }
@@ -246,6 +261,17 @@ def get_professor_rating(professor_name):
         return None
 
     node = edges[0]['node']
+
+    if node.get('school', {}).get('id') != MCMASTER_ID:
+        return None
+
+    # Normalize search name: strip punctuation like trailing commas (e.g. "Last, First" format)
+    search_tokens = set(re.sub(r'[,.]', '', professor_name.lower()).split())
+    rmp_last = node['lastName'].lower()
+    # Require the last name to match exactly as a token — first-name-only overlap is not enough
+    if rmp_last not in search_tokens:
+        return None
+
     return {
         'name': f"{node['firstName']} {node['lastName']}",
         'avg_rating': node['avgRating'],
