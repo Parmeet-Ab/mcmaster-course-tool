@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "McMaster Cookie Grabber",
+  "version": "1.0",
+  "permissions": ["cookies"],
+  "host_permissions": ["*://*.mcmaster.ca/*"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
