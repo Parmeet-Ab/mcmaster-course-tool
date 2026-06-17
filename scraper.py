@@ -14,11 +14,13 @@ load_dotenv()
 
 header = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+}
 
-_mcmaster_cookie = os.getenv('MCMASTER_SESSION', '')
+_session_cookie = os.getenv('MCMASTER_SESSION', '')
 
 _COURSE_INDEX_PATH = os.path.join(os.path.dirname(__file__), 'data', 'courses.json')
+_PROF_INDEX_PATH   = os.path.join(os.path.dirname(__file__), 'data', 'professors.json')
+
 
 def _load_course_index():
     if not os.path.exists(_COURSE_INDEX_PATH):
@@ -26,13 +28,19 @@ def _load_course_index():
     with open(_COURSE_INDEX_PATH) as f:
         return json.load(f)
 
+def _load_prof_index():
+    if not os.path.exists(_PROF_INDEX_PATH):
+        return {}
+    with open(_PROF_INDEX_PATH) as f:
+        return json.load(f)
+
 _course_index = _load_course_index()
+_prof_index   = _load_prof_index()
 
 
 def build_course_index():
     """Scrape all catalog pages and save a normalized_code→url index to data/courses.json.
     Run this once per semester to refresh."""
-
     index = {}
     for page in range(1, 35):
         url = (
@@ -64,31 +72,184 @@ def build_course_index():
     return index
 
 
-def get_courses():
-    page = 1 #needed to go through all pages of courses
-    courses = []
+_cached_terms = None
 
-    for i in range(1, 35):
-        url = 'https://academiccalendars.romcmaster.ca/content.php?catoid=65&catoid=65&navoid=14802&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1&filter%5B3%5D=1&filter%5Bcpage%5D=' + str(page) + '#acalog_template_course_filter'  
-        
-        response = requests.get(url, headers=header, verify = False)
+def _get_active_terms():
+    global _cached_terms
+    if _cached_terms:
+        return _cached_terms
+    r = requests.get(
+        'https://mytimetable.mcmaster.ca/api/v2/multiselectdata.js',
+        headers=header, verify=False
+    )
+    ids = re.findall(r'MsiInstitution\([^,]+,[^,]+,[^,]+,"(\d+)"', r.text)
+    # Ascending order = earliest active term first (current semester has professors assigned)
+    _cached_terms = sorted(set(ids))
+    return _cached_terms
+
+
+def _te():
+    t = int(math.floor(time.time() / 60)) % 1000
+    return t, t % 3 + t % 39 + t % 42
+
+
+def build_professor_index():
+    """Pre-scrape professor assignments using batched API calls.
+    Run once per semester when timetable data is published (3x/year).
+    Stores per-term data so a course taught by different profs each term is tracked.
+    Batches 10 courses per request — O(N/10) calls instead of O(N)."""
+    global _prof_index
+
+    course_index = _load_course_index()
+    # normalized (e.g. MATH1A03) → api_code (e.g. MATH-1A03)
+    all_courses = {
+        norm: re.sub(r'^([A-Za-z]+)', r'\1-', norm)
+        for norm in course_index
+    }
+
+    req_headers = {**header}
+    if _session_cookie:
+        req_headers['Cookie'] = _session_cookie
+    auth_suffix = '' if _session_cookie else '&nouser=1'
+
+    terms = _get_active_terms()
+    # Structure: { normalized: { term_id: { term_name, professor } } }
+    prof_index = {}
+    items = list(all_courses.items())
+    BATCH = 10
+
+    for term in terms:
+        found_this_term = 0
+
+        for start in range(0, len(items), BATCH):
+            batch = items[start:start + BATCH]
+
+            # Step 1: va=al to get selection va tokens for the whole batch
+            t, e = _te()
+            params1 = ''.join(
+                f'&course_{i}_0={requests.utils.quote(api, safe="")}&va_{i}_0=al&rq_{i}_0='
+                for i, (_, api) in enumerate(batch)
+            )
+            r1 = requests.get(
+                f'https://mytimetable.mcmaster.ca/api/class-data?term={term}{params1}&t={t}&e={e}{auth_suffix}',
+                headers=req_headers, verify=False, timeout=10,
+            )
+            if r1.status_code != 200:
+                time.sleep(0.3)
+                continue
+            try:
+                root1 = ET.fromstring(r1.text)
+            except ET.ParseError:
+                time.sleep(0.3)
+                continue
+
+            # course key → first va token; also grab the human-readable term name
+            va_map = {}
+            term_name = term
+            for el in root1.iter():
+                if el.tag == 'term' and el.get('v'):
+                    term_name = el.get('v')
+                if el.tag == 'course':
+                    key = el.get('key', '')
+                    for sel in el.iter('selection'):
+                        va = sel.get('va', '')
+                        if va:
+                            va_map[key] = va
+                            break
+
+            step2 = [
+                (norm, api, va_map[api])
+                for norm, api in batch
+                if api in va_map
+            ]
+            if not step2:
+                time.sleep(0.3)
+                continue
+
+            # Step 2: specific va tokens → teacher names
+            t, e = _te()
+            params2 = ''.join(
+                f'&course_{i}_0={requests.utils.quote(api, safe="")}&va_{i}_0={va}&rq_{i}_0='
+                for i, (_, api, va) in enumerate(step2)
+            )
+            r2 = requests.get(
+                f'https://mytimetable.mcmaster.ca/api/class-data?term={term}{params2}&t={t}&e={e}{auth_suffix}',
+                headers=req_headers, verify=False, timeout=10,
+            )
+            if r2.status_code != 200:
+                time.sleep(0.3)
+                continue
+            try:
+                root2 = ET.fromstring(r2.text)
+            except ET.ParseError:
+                time.sleep(0.3)
+                continue
+
+            api_to_norm = {api: norm for norm, api, _ in step2}
+            for course_el in root2.iter('course'):
+                norm = api_to_norm.get(course_el.get('key', ''))
+                if not norm:
+                    continue
+                for block in course_el.iter('block'):
+                    if block.get('type') != 'LEC':
+                        continue
+                    raw = block.get('teacher', '').strip()
+                    if not raw:
+                        continue
+                    names = [n.strip() for n in raw.split(';')]
+                    prof = next((n for n in names if n.lower() != 'staff' and n), None)
+                    if prof:
+                        if norm not in prof_index:
+                            prof_index[norm] = {}
+                        prof_index[norm][term] = {
+                            'term_name': term_name,
+                            'professor': prof,
+                        }
+                        found_this_term += 1
+                        break
+
+            if (start // BATCH) % 50 == 49:
+                with open(_PROF_INDEX_PATH, 'w') as f:
+                    json.dump(prof_index, f, indent=2)
+
+            time.sleep(0.3)
+
+        print(f"Term {term} ({term_name}): +{found_this_term} assignments, {len(prof_index)} courses with data")
+
+    with open(_PROF_INDEX_PATH, 'w') as f:
+        json.dump(prof_index, f, indent=2)
+
+    _prof_index = prof_index
+    print(f"Saved {len(prof_index)} courses with professor data to {_PROF_INDEX_PATH}")
+    return prof_index
+
+
+def get_professor_for_course(course_code):
+    """Return per-term professor data from the pre-built index.
+    Returns { term_id: { term_name, professor } } or None."""
+    normalized = course_code.replace(' ', '').upper()
+    return _prof_index.get(normalized)
+
+
+def get_courses():
+    courses = []
+    for page in range(1, 35):
+        url = (
+            'https://academiccalendars.romcmaster.ca/content.php?catoid=65&catoid=65&navoid=14802'
+            '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1&filter%5B3%5D=1&filter%5Bcpage%5D='
+            + str(page)
+            + '#acalog_template_course_filter'
+        )
+        response = requests.get(url, headers=header, verify=False)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-  
-        
-        for link in soup.find_all('a', href = True):
+        for link in soup.find_all('a', href=True):
             href = link['href']
-            #Prevents non course links from being added to the list
             if 'preview_course_nopop' in href:
                 courses.append({
                     'title': link.text.strip(),
-                    'url': 'https://academiccalendars.romcmaster.ca/' + href #speicific URL giving quick summary of course
-                }) 
-
-        print(f"Page {page} scraped, total courses found: {len(courses)}") #to track progress
-
-        page += 1
-        
+                    'url': 'https://academiccalendars.romcmaster.ca/' + href,
+                })
+        print(f"Page {page} scraped, total courses found: {len(courses)}")
     return courses
 
 
@@ -99,16 +260,13 @@ def get_course_details(url):
     td = soup.find('td', class_='block_content')
     if not td:
         return None
-
     p = td.find('p')
     if not p:
         return None
 
-    # Title
     h1 = p.find('h1', id='course_preview_title')
     title = h1.get_text(strip=True) if h1 else None
 
-    # Units — text node immediately after h1, before first <br>
     units = None
     if h1:
         for sibling in h1.next_siblings:
@@ -120,7 +278,6 @@ def get_course_details(url):
                     units = float(match.group(1))
                     break
 
-    # Description — all text between <hr> and the first <strong>
     description_parts = []
     hr = p.find('hr')
     if hr:
@@ -133,7 +290,6 @@ def get_course_details(url):
                     description_parts.append(text)
     description = ' '.join(description_parts).strip()
 
-    # Prerequisites and antirequisites — text/links after each labeled <strong>
     prerequisites = None
     antirequisites = None
     for strong in p.find_all('strong'):
@@ -149,13 +305,11 @@ def get_course_details(url):
             elif hasattr(sibling, 'name'):
                 parts.append(sibling.get_text(strip=True))
         value = ' '.join(parts).strip() or None
-
         if 'Prerequisite(s)' in label:
             prerequisites = value
         elif 'Antirequisite(s)' in label:
             antirequisites = value
 
-    # Extract course code — the part before the first " - " in the title
     course_code = None
     if title:
         match = re.match(r'^([A-Z\s]+\s+\w+)', title)
@@ -172,71 +326,12 @@ def get_course_details(url):
     }
 
 
-_cached_terms = None
-
-def _get_active_terms():
-    global _cached_terms
-    if _cached_terms:
-        return _cached_terms
-    r = requests.get(
-        'https://mytimetable.mcmaster.ca/api/v2/multiselectdata.js',
-        headers=header, verify=False
-    )
-    ids = re.findall(r'MsiInstitution\([^,]+,[^,]+,[^,]+,"(\d+)"', r.text)
-    _cached_terms = sorted(set(ids), reverse=True)
-    return _cached_terms
-
-
-def get_professor_for_course(course_code):
-    # Auth tokens required by the timetable API — replicates nWindow() from common.js
-    t = int(math.floor(time.time() / 60)) % 1000
-    e = t % 3 + t % 39 + t % 42
-
-    terms = _get_active_terms()
-
-    encoded = requests.utils.quote(course_code, safe='')
-    req_headers = {**header}
-    if _mcmaster_cookie:
-        req_headers['Cookie'] = _mcmaster_cookie
-
-    for term in terms:
-        url = (
-            f'https://mytimetable.mcmaster.ca/api/class-data'
-            f'?term={term}&course_0_0={encoded}'
-            f'&va_0_0=al&t={t}&e={e}'
-            + ('' if _mcmaster_cookie else '&nouser=1')
-        )
-        response = requests.get(url, headers=req_headers, verify=False)
-        if response.status_code != 200:
-            continue
-
-        try:
-            root = ET.fromstring(response.text)
-        except ET.ParseError:
-            continue
-
-        for block in root.iter('block'):
-            if block.get('type') == 'LEC':
-                raw = block.get('teacher', '').strip()
-                if not raw:
-                    continue
-                # Field can be "Last, First; Staff" — pick the first real name
-                names = [n.strip() for n in raw.split(';')]
-                professor = next((n for n in names if n.lower() != 'staff' and n), None)
-                if professor:
-                    return professor
-
-    return None
-
-
 def get_course_detail(course_code):
     normalized = course_code.replace(' ', '').upper()
 
-    # Fast path: direct URL lookup from cached index
     if normalized in _course_index:
         return get_course_details(_course_index[normalized])
 
-    # Slow path: search the calendar page by page (used when index hasn't been built yet)
     encoded = requests.utils.quote(course_code, safe='')
     for page in range(1, 20):
         url = (
@@ -276,9 +371,7 @@ def get_professor_rating(professor_name):
               avgRating
               avgDifficulty
               numRatings
-              school {
-                id
-              }
+              school { id }
             }
           }
         }
@@ -319,15 +412,11 @@ def get_professor_rating(professor_name):
         return None
 
     node = edges[0]['node']
-
     if node.get('school', {}).get('id') != MCMASTER_ID:
         return None
 
-    # Normalize search name: strip punctuation like trailing commas (e.g. "Last, First" format)
     search_tokens = set(re.sub(r'[,.]', '', professor_name.lower()).split())
-    rmp_last = node['lastName'].lower()
-    # Require the last name to match exactly as a token — first-name-only overlap is not enough
-    if rmp_last not in search_tokens:
+    if node['lastName'].lower() not in search_tokens:
         return None
 
     return {
@@ -338,5 +427,72 @@ def get_professor_rating(professor_name):
     }
 
 
+def diagnose_course(course_code='MATH 1A03'):
+    """Print step-by-step debug info for one course to diagnose why teacher names are missing."""
+    api_code = re.sub(r'^([A-Za-z]+)', r'\1-', course_code.replace(' ', '').upper())
+    encoded  = requests.utils.quote(api_code, safe='')
+    terms    = _get_active_terms()
+
+    req_headers = {**header}
+    if _session_cookie:
+        req_headers['Cookie'] = _session_cookie
+        print(f"Cookie: SET ({len(_session_cookie)} chars)")
+    else:
+        print("Cookie: NOT SET — add MCMASTER_SESSION to .env")
+
+    auth_suffix = '' if _session_cookie else '&nouser=1'
+
+    for term in terms[:2]:
+        print(f"\n=== Term {term} ===")
+        t, e = _te()
+        url1 = (f'https://mytimetable.mcmaster.ca/api/class-data'
+                f'?term={term}&course_0_0={encoded}&va_0_0=al&rq_0_0=&t={t}&e={e}{auth_suffix}')
+        r1 = requests.get(url1, headers=req_headers, verify=False, timeout=10)
+        print(f"Step 1 status: {r1.status_code}")
+        if r1.status_code != 200:
+            print("Step 1 failed — skipping term"); continue
+        try:
+            root1 = ET.fromstring(r1.text)
+        except ET.ParseError:
+            print("Step 1 parse error"); continue
+
+        va_map = {}
+        for el in root1.iter():
+            if el.tag == 'course':
+                key = el.get('key', '')
+                for sel in el.iter('selection'):
+                    va = sel.get('va', '')
+                    if va:
+                        va_map[key] = va
+                        break
+
+        print(f"Step 1 va tokens found: {va_map}")
+        if api_code not in va_map:
+            print("Course not offered this term — no va token"); continue
+
+        va = va_map[api_code]
+        t, e = _te()
+        url2 = (f'https://mytimetable.mcmaster.ca/api/class-data'
+                f'?term={term}&course_0_0={encoded}&va_0_0={va}&rq_0_0=&t={t}&e={e}{auth_suffix}')
+        r2 = requests.get(url2, headers=req_headers, verify=False, timeout=10)
+        print(f"Step 2 status: {r2.status_code}  (va={va})")
+        try:
+            root2 = ET.fromstring(r2.text)
+        except ET.ParseError:
+            print("Step 2 parse error"); continue
+
+        for block in root2.iter('block'):
+            if block.get('type') == 'LEC':
+                print(f"LEC block teacher field: '{block.get('teacher', '')}'")
+
 if __name__ == "__main__":
-    build_course_index()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'diagnose':
+        diagnose_course(sys.argv[2] if len(sys.argv) > 2 else 'MATH 1A03')
+    else:
+        if not os.path.exists(_COURSE_INDEX_PATH):
+            build_course_index()
+        else:
+            print(f"Course index already exists ({len(_course_index)} courses) — skipping rebuild.")
+        build_professor_index()
+
