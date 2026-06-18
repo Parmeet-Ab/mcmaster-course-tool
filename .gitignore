@@ -2,5 +2,3 @@
 venv/
 __pycache__/
 CLAUDE.md
-data/courses.json
-data/professors.json
