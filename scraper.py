@@ -69,11 +69,9 @@ def build_course_index():
     with open(_COURSE_INDEX_PATH, 'w') as f:
         json.dump(index, f)
     print(f"Saved {len(index)} courses to {_COURSE_INDEX_PATH}")
-    return index
-
+    return index 
 
 _cached_terms = None
-
 def _get_active_terms():
     global _cached_terms
     if _cached_terms:
@@ -92,16 +90,14 @@ def _te():
     t = int(math.floor(time.time() / 60)) % 1000
     return t, t % 3 + t % 39 + t % 42
 
-
 def build_professor_index():
     """Pre-scrape professor assignments using batched API calls.
     Run once per semester when timetable data is published (3x/year).
-    Stores per-term data so a course taught by different profs each term is tracked.
-    Batches 10 courses per request — O(N/10) calls instead of O(N)."""
+    Stores per-term data so a course taught by different profs each term is tracked. Batches 10 courses per request — O(N/10) calls instead of O(N)."""
     global _prof_index
 
     course_index = _load_course_index()
-    # normalized (e.g. MATH1A03) → api_code (e.g. MATH-1A03)
+    # normalized (e.g. MATH1A03) -> api_code (e.g. MATH-1A03)
     all_courses = {
         norm: re.sub(r'^([A-Za-z]+)', r'\1-', norm)
         for norm in course_index
@@ -230,29 +226,6 @@ def get_professor_for_course(course_code):
     normalized = course_code.replace(' ', '').upper()
     return _prof_index.get(normalized)
 
-
-def get_courses():
-    courses = []
-    for page in range(1, 35):
-        url = (
-            'https://academiccalendars.romcmaster.ca/content.php?catoid=65&catoid=65&navoid=14802'
-            '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1&filter%5B3%5D=1&filter%5Bcpage%5D='
-            + str(page)
-            + '#acalog_template_course_filter'
-        )
-        response = requests.get(url, headers=header, verify=False)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if 'preview_course_nopop' in href:
-                courses.append({
-                    'title': link.text.strip(),
-                    'url': 'https://academiccalendars.romcmaster.ca/' + href,
-                })
-        print(f"Page {page} scraped, total courses found: {len(courses)}")
-    return courses
-
-
 def get_course_details(url):
     response = requests.get(url, headers=header, verify=False)
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -325,37 +298,12 @@ def get_course_details(url):
         'antirequisites': antirequisites,
     }
 
-
 def get_course_detail(course_code):
     normalized = course_code.replace(' ', '').upper()
-
     if normalized in _course_index:
         return get_course_details(_course_index[normalized])
-
-    encoded = requests.utils.quote(course_code, safe='')
-    for page in range(1, 20):
-        url = (
-            'https://academiccalendars.romcmaster.ca/content.php'
-            '?catoid=65&catoid=65&navoid=14802'
-            '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
-            f'&filter%5B3%5D=1&filter%5Bcpage%5D={page}&filter%5Bkeyword%5D={encoded}'
-        )
-        response = requests.get(url, headers=header, verify=False)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        course_links = [l for l in soup.find_all('a', href=True) if 'preview_course_nopop' in l['href']]
-        if not course_links:
-            break
-
-        for link in course_links:
-            link_text = link.get_text(strip=True).replace(' ', '').upper()
-            if not link_text.startswith(normalized):
-                continue
-            course_url = 'https://academiccalendars.romcmaster.ca/' + link['href']
-            time.sleep(1)
-            return get_course_details(course_url)
-
-    return None
+    else:
+        return None
 
 
 def get_professor_rating(professor_name):
@@ -426,73 +374,9 @@ def get_professor_rating(professor_name):
         'num_ratings': node['numRatings'],
     }
 
-
-def diagnose_course(course_code='MATH 1A03'):
-    """Print step-by-step debug info for one course to diagnose why teacher names are missing."""
-    api_code = re.sub(r'^([A-Za-z]+)', r'\1-', course_code.replace(' ', '').upper())
-    encoded  = requests.utils.quote(api_code, safe='')
-    terms    = _get_active_terms()
-
-    req_headers = {**header}
-    if _session_cookie:
-        req_headers['Cookie'] = _session_cookie
-        print(f"Cookie: SET ({len(_session_cookie)} chars)")
-    else:
-        print("Cookie: NOT SET — add MCMASTER_SESSION to .env")
-
-    auth_suffix = '' if _session_cookie else '&nouser=1'
-
-    for term in terms[:2]:
-        print(f"\n=== Term {term} ===")
-        t, e = _te()
-        url1 = (f'https://mytimetable.mcmaster.ca/api/class-data'
-                f'?term={term}&course_0_0={encoded}&va_0_0=al&rq_0_0=&t={t}&e={e}{auth_suffix}')
-        r1 = requests.get(url1, headers=req_headers, verify=False, timeout=10)
-        print(f"Step 1 status: {r1.status_code}")
-        if r1.status_code != 200:
-            print("Step 1 failed — skipping term"); continue
-        try:
-            root1 = ET.fromstring(r1.text)
-        except ET.ParseError:
-            print("Step 1 parse error"); continue
-
-        va_map = {}
-        for el in root1.iter():
-            if el.tag == 'course':
-                key = el.get('key', '')
-                for sel in el.iter('selection'):
-                    va = sel.get('va', '')
-                    if va:
-                        va_map[key] = va
-                        break
-
-        print(f"Step 1 va tokens found: {va_map}")
-        if api_code not in va_map:
-            print("Course not offered this term — no va token"); continue
-
-        va = va_map[api_code]
-        t, e = _te()
-        url2 = (f'https://mytimetable.mcmaster.ca/api/class-data'
-                f'?term={term}&course_0_0={encoded}&va_0_0={va}&rq_0_0=&t={t}&e={e}{auth_suffix}')
-        r2 = requests.get(url2, headers=req_headers, verify=False, timeout=10)
-        print(f"Step 2 status: {r2.status_code}  (va={va})")
-        try:
-            root2 = ET.fromstring(r2.text)
-        except ET.ParseError:
-            print("Step 2 parse error"); continue
-
-        for block in root2.iter('block'):
-            if block.get('type') == 'LEC':
-                print(f"LEC block teacher field: '{block.get('teacher', '')}'")
-
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == 'diagnose':
-        diagnose_course(sys.argv[2] if len(sys.argv) > 2 else 'MATH 1A03')
-    else:
-        if not os.path.exists(_COURSE_INDEX_PATH):
-            build_course_index()
-        else:
-            print(f"Course index already exists ({len(_course_index)} courses) — skipping rebuild.")
+    if not os.path.exists(_COURSE_INDEX_PATH):
+        build_course_index()
+    elif not os.path.exists(_PROF_INDEX_PATH):
         build_professor_index()
 
