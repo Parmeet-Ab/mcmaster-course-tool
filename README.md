@@ -62,3 +62,5 @@ To keep the app fast and cheap, the three model calls (summary + two requisite s
 Download the chrome-extension folder. 
 
 To use the Chrome extension: go to `chrome://extensions`, enable Developer Mode, click "Load unpacked", and select the `chrome-extension/` folder.
+
+## NOTE: This is not offically from McMaster
