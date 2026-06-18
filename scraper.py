@@ -18,8 +18,14 @@ header = {
 
 _session_cookie = os.getenv('MCMASTER_SESSION', '')
 
-_COURSE_INDEX_PATH = os.path.join(os.path.dirname(__file__), 'data', 'courses.json')
-_PROF_INDEX_PATH   = os.path.join(os.path.dirname(__file__), 'data', 'professors.json')
+# Where the scraped index files live. Defaults to the local `data/` dir, but on
+# Railway this is set to the mounted volume path (e.g. DATA_DIR=/data) so the
+# scraped data persists privately on the server instead of in the repo.
+_DATA_DIR = os.getenv('DATA_DIR', os.path.join(os.path.dirname(__file__), 'data'))
+os.makedirs(_DATA_DIR, exist_ok=True)
+
+_COURSE_INDEX_PATH = os.path.join(_DATA_DIR, 'courses.json')
+_PROF_INDEX_PATH   = os.path.join(_DATA_DIR, 'professors.json')
 
 
 def _load_course_index():
@@ -375,8 +381,10 @@ def get_professor_rating(professor_name):
     }
 
 if __name__ == "__main__":
+    # Build whichever indexes are missing. Run this once to seed DATA_DIR
+    # (locally or on the Railway volume).
     if not os.path.exists(_COURSE_INDEX_PATH):
         build_course_index()
-    elif not os.path.exists(_PROF_INDEX_PATH):
+    if not os.path.exists(_PROF_INDEX_PATH):
         build_professor_index()
 
