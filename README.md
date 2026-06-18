@@ -13,6 +13,8 @@ Type a course code (e.g. `Chem 1A03`) into the Chrome extension popup, and withi
 - The professor(s) teaching it this semester, pulled from the live timetable API
 - Their Rate My Professor overall rating, difficulty score, and review count
 
+A loading spinner shows while the request is in flight so it's always clear the extension is working.
+
 ---
 
 ## Architecture
@@ -41,7 +43,11 @@ The Google Gemini API is used to make the data student-friendly:
 
 - **Requisite shortening** — prerequisites and antirequisites are condensed to just course codes and essential conditions(cleaning up data scraped)
 
-To keep the app fast and cheap, the three model calls (summary + two requisite shortenings) run **in parallel** with `ThreadPoolExecutor`, results are **cached per course code** so repeat lookups skip the model entirely, and the whole feature is wrapped so that if the API key is missing or a call fails, the endpoint **degrades gracefully** and still returns the raw course data.
+---
+
+## Data & Deployment
+
+The scraped index files are **not committed to the repo** In production they live on a **Railway persistent volume**, with the app reading from a configurable `DATA_DIR` (defaulting to local `data/` in development, set to the mounted volume path on Railway). This keeps the public repo clean while the deployed app still has the data it needs.
 
 ---
 
@@ -54,6 +60,7 @@ To keep the app fast and cheap, the three model calls (summary + two requisite s
 | Web Scraping | BeautifulSoup, requests |
 | AI / LLM | Google Gemini API (summaries + requisite condensing) |
 | External API | Rate My Professor GraphQL, McMaster Timetable XML API |
+| Storage | Railway persistent volume (scraped data kept out of the repo) |
 | Deployment | Railway, Gunicorn |
 
 ---
