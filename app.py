@@ -12,7 +12,6 @@ CORS_HEADERS = {
     'Access-Control-Allow-Private-Network': 'true',
 }
 
-
 @app.before_request
 def handle_preflight():
     if request.method == 'OPTIONS':
@@ -21,13 +20,11 @@ def handle_preflight():
             res.headers[k] = v
         return res
 
-
 @app.after_request
 def cors_headers(response):
     for k, v in CORS_HEADERS.items():
         response.headers[k] = v
     return response
-
 
 @app.route("/course", methods=['GET'])
 def get_course():
@@ -51,15 +48,17 @@ def get_course():
     if term_data:
         unique_names = {v['professor'] for v in term_data.values() if v.get('professor')}
         ratings = {name: get_professor_rating(name) for name in unique_names}
-        professors = sorted([
-            {
+
+        professor_list = []
+        for tid, tdata in term_data.items():
+            professor_list.append({
                 'term_id': tid,
                 'term_name': tdata['term_name'],
                 'name': tdata['professor'],
                 'rating': ratings.get(tdata['professor']),
-            }
-            for tid, tdata in term_data.items()
-        ], key=lambda x: x['term_id'])
+            })
+
+        professors = sorted(professor_list, key=lambda x: x['term_id'])
 
     return jsonify({
         "course": course,
