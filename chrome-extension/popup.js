@@ -2,7 +2,7 @@ const searchBtn = document.getElementById('search-btn');
 const courseInput = document.getElementById('course-input');
 const resultDiv = document.getElementById('result');
 
-const FLASK = 'http://localhost:8080';
+const FLASK = 'https://web-production-955e1.up.railway.app';
 
 function ratingColor(rating) {
   if (rating >= 4) return '#27ae60';
