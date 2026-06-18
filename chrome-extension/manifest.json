@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "McMaster Cookie Grabber",
+  "name": "McMaster Course Tool",
   "version": "1.0",
   "permissions": ["cookies"],
   "host_permissions": ["*://*.mcmaster.ca/*"],

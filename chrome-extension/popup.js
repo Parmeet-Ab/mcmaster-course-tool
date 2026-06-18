@@ -27,10 +27,11 @@ searchBtn.addEventListener('click', async () => {
       const profs = data.professors || [];
       const courseTitle = data.course.title || code;
 
-      let profsHtml = '<p style="color:#888;margin-top:4px;font-size:12px">No professor data found. Run the scraper first.</p>';
+      let profsHtml = '<p style="color:#888;margin-top:4px;font-size:12px">Sorry!No professor data found.</p>';
 
       if (profs.length) {
-        profsHtml = profs.map(p => {
+        profsHtml = profs.map(p => 
+          {
           const r = p.rating;
           const ratingHtml = r ? `
             <div class="stat"><span>Rating</span><span style="color:${ratingColor(r.avg_rating)}">${r.avg_rating}/5</span></div>
@@ -54,7 +55,7 @@ searchBtn.addEventListener('click', async () => {
         </div>`;
     }
   } catch {
-    resultDiv.innerHTML = '<p class="error">Could not reach Flask server. Is it running?</p>';
+    resultDiv.innerHTML = '<p class="error">Error. Server Is Currently Down.</p>';
   }
 
   searchBtn.disabled = false;
