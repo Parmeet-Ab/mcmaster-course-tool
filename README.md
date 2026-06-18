@@ -12,9 +12,7 @@ Type a course code (e.g. `Chem 1A03`) into the Chrome extension popup, and withi
 - The course units, plus prerequisites and antirequisites condensed by AI to fit the popup
 - The professor(s) teaching it this semester, pulled from the live timetable API
 - Their Rate My Professor overall rating, difficulty score, and review count
-
-A loading spinner shows while the request is in flight so it's always clear the extension is working.
-
+  
 ---
 
 ## Architecture
