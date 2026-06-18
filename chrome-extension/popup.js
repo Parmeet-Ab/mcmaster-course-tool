@@ -14,7 +14,7 @@ searchBtn.addEventListener('click', async () => {
   const code = courseInput.value.trim();
   if (!code) return;
 
-  resultDiv.innerHTML = '<p class="loading">Searching...</p>';
+  resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><span class="loading-dots">Searching</span></div>';
   searchBtn.disabled = true;
 
   try {
