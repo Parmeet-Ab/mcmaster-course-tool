@@ -25,7 +25,29 @@ searchBtn.addEventListener('click', async () => {
       resultDiv.innerHTML = `<p class="error">${data.error}</p>`;
     } else {
       const profs = data.professors || [];
-      const courseTitle = data.course.title || code;
+      const course = data.course || {};
+      const courseTitle = course.title || code;
+
+      const summaryHtml = data.summary
+        ? `<div class="summary">${data.summary}</div>`
+        : '';
+
+      const prereqs = course.prerequisites_short || course.prerequisites;
+      const antireqs = course.antirequisites_short || course.antirequisites;
+
+      let infoHtml = '';
+      if (course.units != null) {
+        infoHtml += `<div class="stat"><span>Units</span><span>${course.units}</span></div>`;
+      }
+      if (prereqs) {
+        infoHtml += `<div class="info-row"><span class="info-label">Prerequisites</span><span class="info-value">${prereqs}</span></div>`;
+      }
+      if (antireqs) {
+        infoHtml += `<div class="info-row"><span class="info-label">Antirequisites</span><span class="info-value">${antireqs}</span></div>`;
+      }
+      if (infoHtml) {
+        infoHtml = `<div class="course-info">${infoHtml}</div>`;
+      }
 
       let profsHtml = '<p style="color:#888;margin-top:4px;font-size:12px">Sorry!No professor data found.</p>';
 
@@ -51,6 +73,8 @@ searchBtn.addEventListener('click', async () => {
       resultDiv.innerHTML = `
         <div class="card">
           <div class="course-name">${courseTitle}</div>
+          ${summaryHtml}
+          ${infoHtml}
           ${profsHtml}
         </div>`;
     }
