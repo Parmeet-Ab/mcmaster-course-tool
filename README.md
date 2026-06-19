@@ -22,15 +22,15 @@ Chrome Extension (popup.js)
         │
 Flask REST API (app.py) — deployed on Railway
         │
-        ├─── scraper.py -> McMaster Academic Calendar(BeautifulSoup)
+        ├─── scraper.py -> pre-built course cache (data/course_details.json)
         ├─── scraper.py -> McMaster Timetable API (XML parsing)
         ├─── scraper.py -> Rate My Professor (GraphQL API)
         └─── summarizer.py -> Google Gemini (AI summary + requisite shortening)
 ```
 
-The backend runs two scraping tasks concurrently using `ThreadPoolExecutor` so the calendar lookup(to get course information) and timetable fetch(for professor information) happen in parallel, keeping response times low.
+The backend runs two lookups concurrently using `ThreadPoolExecutor` so the course-detail read and the timetable fetch (for professor information) happen in parallel, keeping response times low.
 
-A pre-built index (`data/courses.json`, `data/professors.json`) is generated once per semester. In the past I attempted to have it direcrtly acess the information for professors, however, due to secuirty measures made on the academic calender, this process has to occur once per semester instead. 
+A set of pre-built indexes (`data/courses.json`, `data/course_details.json`, `data/professors.json`) is generated once per semester. The live server never scrapes the academic calendar.
 
 ---
 
@@ -45,7 +45,7 @@ The Google Gemini API is used to make the data student-friendly:
 
 ## Data & Deployment
 
-The scraped index files are **not committed to the repo** In production they live on a **Railway persistent volume**, with the app reading from a configurable `DATA_DIR` (defaulting to local `data/` in development, set to the mounted volume path on Railway). This keeps the public repo clean while the deployed app still has the data it needs.
+The scraped index files are **not committed to the repo.** In production they live on a **Railway persistent volume** (mounted at `/data`), with the app reading from a configurable `DATA_DIR` (defaulting to local `data/` in development, set to the volume path on Railway). This keeps the public repo clean while the deployed app still has the data it needs.
 
 ---
 
@@ -55,7 +55,7 @@ The scraped index files are **not committed to the repo** In production they liv
 |---|---|
 | Chrome Extension | JavaScript|
 | Backend API | Python, Flask |
-| Web Scraping | BeautifulSoup, requests |
+| Web Scraping | BeautifulSoup, requests, Playwright (build-only, to pass the calendar's AWS WAF challenge) |
 | AI / LLM | Google Gemini API (summaries + requisite condensing) |
 | External API | Rate My Professor GraphQL, McMaster Timetable XML API |
 | Storage | Railway persistent volume (scraped data kept out of the repo) |
