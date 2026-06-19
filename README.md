@@ -58,7 +58,7 @@ The scraped index files are **not committed to the repo.** In production they li
 |---|---|
 | Chrome Extension | JavaScript|
 | Backend API | Python, Flask |
-| Web Scraping | BeautifulSoup, requests, Playwright (build-only, to pass the calendar's AWS WAF challenge) |
+| Web Scraping | BeautifulSoup, requests, Playwright|
 | AI / LLM | Google Gemini API (summaries + requisite condensing) |
 | External API | Rate My Professor GraphQL, McMaster Timetable XML API |
 | Storage | Railway persistent volume (scraped data kept out of the repo) |
