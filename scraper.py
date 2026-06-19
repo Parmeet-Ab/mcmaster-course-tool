@@ -24,30 +24,41 @@ _session_cookie = os.getenv('MCMASTER_SESSION', '')
 _DATA_DIR = os.getenv('DATA_DIR', os.path.join(os.path.dirname(__file__), 'data'))
 os.makedirs(_DATA_DIR, exist_ok=True)
 
-_COURSE_INDEX_PATH = os.path.join(_DATA_DIR, 'courses.json')
-_PROF_INDEX_PATH   = os.path.join(_DATA_DIR, 'professors.json')
+_COURSE_INDEX_PATH   = os.path.join(_DATA_DIR, 'courses.json')
+_PROF_INDEX_PATH     = os.path.join(_DATA_DIR, 'professors.json')
+# Full course details, pre-scraped per semester. The calendar site is behind an
+# AWS WAF JS challenge that plain `requests` can't pass, so we can't fetch details
+# live anymore — the server serves them from this cache instead. See
+# build_course_details_index().
+_COURSE_DETAILS_PATH = os.path.join(_DATA_DIR, 'course_details.json')
 
+
+def _load_json(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
 
 def _load_course_index():
-    if not os.path.exists(_COURSE_INDEX_PATH):
-        return {}
-    with open(_COURSE_INDEX_PATH) as f:
-        return json.load(f)
+    return _load_json(_COURSE_INDEX_PATH)
 
 def _load_prof_index():
-    if not os.path.exists(_PROF_INDEX_PATH):
-        return {}
-    with open(_PROF_INDEX_PATH) as f:
-        return json.load(f)
+    return _load_json(_PROF_INDEX_PATH)
 
-_course_index = _load_course_index()
-_prof_index   = _load_prof_index()
+def _load_course_details():
+    return _load_json(_COURSE_DETAILS_PATH)
+
+_course_index   = _load_course_index()
+_prof_index     = _load_prof_index()
+_course_details = _load_course_details()
 
 
 def build_course_index():
     """Scrape all catalog pages and save a normalized_code→url index to data/courses.json.
     Run this once per semester to refresh."""
+    
     index = {}
+    sess = _get_waf_session()
     for page in range(1, 35):
         url = (
             'https://academiccalendars.romcmaster.ca/content.php'
@@ -55,7 +66,7 @@ def build_course_index():
             '&filter%5Bitem_type%5D=3&filter%5Bonly_active%5D=1'
             f'&filter%5B3%5D=1&filter%5Bcpage%5D={page}'
         )
-        response = requests.get(url, headers=header, verify=False)
+        response = sess.get(url, headers=header, verify=False, timeout=30)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         links = [l for l in soup.find_all('a', href=True) if 'preview_course_nopop' in l['href']]
@@ -232,9 +243,8 @@ def get_professor_for_course(course_code):
     normalized = course_code.replace(' ', '').upper()
     return _prof_index.get(normalized)
 
-def get_course_details(url):
-    response = requests.get(url, headers=header, verify=False)
-    soup = BeautifulSoup(response.text, 'html.parser')
+def _parse_course_html(html):
+    soup = BeautifulSoup(html, 'html.parser')
 
     td = soup.find('td', class_='block_content')
     if not td:
@@ -304,12 +314,88 @@ def get_course_details(url):
         'antirequisites': antirequisites,
     }
 
+_WAF_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+           '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+
+def _get_waf_session():
+    """Solve the calendar site's AWS WAF JS challenge with a headless browser and
+    return a requests.Session carrying the resulting aws-waf-token cookie. Once we
+    hold that token, plain requests get through (200) until it expires.
+
+    Playwright is a build-only dependency — install with:
+        pip install playwright && playwright install chromium
+    Production never calls this; it serves details from course_details.json."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(user_agent=_WAF_UA)
+        page = ctx.new_page()
+        # Any calendar URL triggers the challenge; the browser solves it on load.
+        page.goto(
+            'https://academiccalendars.romcmaster.ca/content.php?catoid=65&navoid=14802',
+            wait_until='networkidle', timeout=60000,
+        )
+        cookies = ctx.cookies()
+        browser.close()
+
+    sess = requests.Session()
+    sess.headers['User-Agent'] = _WAF_UA
+    for c in cookies:
+        sess.cookies.set(c['name'], c['value'],
+                         domain=c.get('domain', '').lstrip('.') or None)
+    return sess
+
+
+def build_course_details_index():
+    """Pre-scrape full details for every course in courses.json into
+    data/course_details.json. Solves the WAF challenge once, then fetches each
+    page with a plain authenticated session, re-solving if the token expires.
+    Run once per semester alongside build_course_index()."""
+    global _course_details
+
+    course_index = _load_course_index()
+    items = list(course_index.items())
+    # Resume from any partial run: keep what's already cached and skip those.
+    details = _load_course_details()
+    sess = None
+
+    for i, (norm, url) in enumerate(items):
+        if norm in details:
+            continue
+        if sess is None:
+            sess = _get_waf_session()
+        try:
+            r = sess.get(url, headers=header, verify=False, timeout=30)
+            if r.status_code != 200 or 'block_content' not in r.text:
+                # Token expired or re-challenged — solve again and retry once.
+                sess = _get_waf_session()
+                r = sess.get(url, headers=header, verify=False, timeout=30)
+            parsed = _parse_course_html(r.text)
+            if parsed:
+                details[norm] = parsed
+        except Exception as e:
+            print(f"  skip {norm}: {e}")
+
+        if i % 50 == 0:
+            with open(_COURSE_DETAILS_PATH, 'w') as f:
+                json.dump(details, f)
+            print(f"{i}/{len(items)} — {len(details)} cached")
+        time.sleep(0.1)
+
+    with open(_COURSE_DETAILS_PATH, 'w') as f:
+        json.dump(details, f)
+    _course_details = details
+    print(f"Saved {len(details)} course details to {_COURSE_DETAILS_PATH}")
+    return details
+
+
 def get_course_detail(course_code):
+    """Return full course details from the pre-built cache (data/course_details.json).
+    We can't fetch the calendar live anymore — it's behind an AWS WAF challenge —
+    so details are pre-scraped per semester by build_course_details_index()."""
     normalized = course_code.replace(' ', '').upper()
-    if normalized in _course_index:
-        return get_course_details(_course_index[normalized])
-    else:
-        return None
+    return _course_details.get(normalized)
 
 
 def get_professor_rating(professor_name):
@@ -385,6 +471,8 @@ if __name__ == "__main__":
     # (locally or on the Railway volume).
     if not os.path.exists(_COURSE_INDEX_PATH):
         build_course_index()
+    if not os.path.exists(_COURSE_DETAILS_PATH):
+        build_course_details_index()
     if not os.path.exists(_PROF_INDEX_PATH):
         build_professor_index()
 
