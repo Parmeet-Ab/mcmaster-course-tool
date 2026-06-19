@@ -2,6 +2,9 @@
 A full-stack tool that helps McMaster students make course decisions without hunting through multiple websites. Search any course code and instantly get an AI-generated course summary, condensed prerequisites, the current professor, and their Rate My Professor rating, all in one place.
 
 ---
+## Video Demo(Click To View)
+[![Course Selection Tool Demo](https://img.youtube.com/vi/YYJt7_ElkG4/maxresdefault.jpg)](https://youtu.be/YYJt7_ElkG4)
+
 
 ## What It Does
 
